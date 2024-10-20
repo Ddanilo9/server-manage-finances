@@ -32,12 +32,13 @@ const SPREADSHEET_ID_MIRANDA = "1AOjqabjFF4r2lIBtrfDCaYYYEqUcX9HGk8A4GpJKd7E"; /
 
 // Funzione per aggiungere spese ai fogli Google
 // Funzione per aggiungere spese ai fogli Google
+// Funzione per aggiungere spese ai fogli Google
 async function addExpenseToSheets(
   description,
   price,
   category,
   shared,
-  userEmail
+  spreadsheetId
 ) {
   try {
     let yourPrice = price;
@@ -48,6 +49,11 @@ async function addExpenseToSheets(
       yourPrice = price / 2;
       mirandaPrice = price / 2;
     }
+
+    // Log per la suddivisione della spesa
+    console.log(
+      `Prezzo da inserire: yourPrice=${yourPrice}, mirandaPrice=${mirandaPrice}`
+    );
 
     // Mappatura tra categorie e celle
     const categoryToCellMap = {
@@ -62,26 +68,45 @@ async function addExpenseToSheets(
       throw new Error(`Categoria non riconosciuta: ${category}`);
     }
 
-    // Seleziona il foglio corretto in base all'email dell'utente
-    let spreadsheetId = SPREADSHEET_ID_YOUR; // Default to Danilo's sheet
-    if (userEmail === "miranda@example.com") {
-      // Sostituisci con l'email corretta di Miranda
-      spreadsheetId = SPREADSHEET_ID_MIRANDA;
-    }
+    // Log della cella e del foglio in cui stai scrivendo
+    console.log(
+      "Categoria:",
+      category,
+      "Cella:",
+      cell,
+      "Foglio:",
+      spreadsheetId
+    );
 
-    // Aggiungi la spesa al foglio corretto
+    // Aggiungi la spesa al foglio giusto
     await sheets.spreadsheets.values.append({
-      spreadsheetId: spreadsheetId, // Cambia in base all'utente loggato
-      range: `Sheet1!${cell}`,
+      spreadsheetId: spreadsheetId, // Usa l'ID del foglio passato
+      range: `Sheet1!${cell}`, // Aggiungi il valore alla cella corretta
       valueInputOption: "USER_ENTERED",
       resource: {
         values: [[yourPrice]], // Inserisci solo il prezzo
       },
     });
 
-    console.log("Spesa aggiunta con successo nel foglio corretto!");
+    console.log(
+      `Spesa di ${yourPrice} aggiunta a ${spreadsheetId} nella cella ${cell}`
+    );
+
+    if (shared) {
+      await sheets.spreadsheets.values.append({
+        spreadsheetId: spreadsheetId, // Usa l'ID del foglio passato
+        range: `Sheet1!${cell}`, // Per Miranda
+        valueInputOption: "USER_ENTERED",
+        resource: {
+          values: [[mirandaPrice]], // Inserisci il prezzo condiviso
+        },
+      });
+      console.log(
+        `Prezzo condiviso di ${mirandaPrice} aggiunto nella cella ${cell}`
+      );
+    }
   } catch (error) {
-    console.error("Errore durante l'aggiunta della spesa sui fogli:", error);
+    console.error("Errore durante l'aggiunta della spesa ai fogli:", error);
   }
 }
 
@@ -199,10 +224,10 @@ app.get("/api/expenses", async (req, res) => {
 });
 
 // Route to add an expense
+// Route to add an expense
 app.post("/api/expenses/add", async (req, res) => {
   const { token, category, price, type, description, shared } = req.body;
 
-  // Controlla se il token è presente
   if (!token) {
     console.error("Token is missing");
     return res.status(401).send("Unauthorized: No token provided");
@@ -212,6 +237,27 @@ app.post("/api/expenses/add", async (req, res) => {
     // Verifica il token dell'utente
     const decodedToken = await admin.auth().verifyIdToken(token);
     const uid = decodedToken.uid;
+    const email = decodedToken.email; // Prendi l'email dell'utente
+
+    // Log per verificare il token e l'email
+    console.log("Token verificato:", decodedToken);
+    console.log("Email dell'utente autenticato:", email);
+
+    // Scegli il foglio corretto in base all'utente
+    let spreadsheetId;
+    const authorizedUsers = {
+      "miri@mail.com": SPREADSHEET_ID_MIRANDA,
+      "dani@mail.com": SPREADSHEET_ID_YOUR,
+    };
+    
+    // Verifica se l'email dell'utente è autorizzata
+    if (authorizedUsers[email]) {
+      spreadsheetId = authorizedUsers[email];
+      console.log(`Usando il foglio per ${email}:`, spreadsheetId);
+    } else {
+      console.log("Utente non autorizzato:", email);
+      return res.status(400).send("Utente non autorizzato");
+    }
 
     // Crea un nuovo documento nella collezione "expenses"
     const newExpense = {
@@ -223,11 +269,21 @@ app.post("/api/expenses/add", async (req, res) => {
       date: new Date(),
     };
 
+    // Log per la nuova spesa
+    console.log("Nuova spesa creata:", newExpense);
+
     // Aggiungi la spesa al database Firestore
     const docRef = await db.collection("expenses").add(newExpense);
+    console.log("Spesa salvata nel database con ID:", docRef.id);
 
-    // Aggiungi la spesa ai fogli Google
-    await addExpenseToSheets(description, price, category, shared);
+    // Aggiungi la spesa ai fogli Google, passando l'ID del foglio giusto
+    await addExpenseToSheets(
+      description,
+      price,
+      category,
+      shared,
+      spreadsheetId
+    );
 
     res.json({ message: "Spesa aggiunta con successo", expenseId: docRef.id });
   } catch (error) {
