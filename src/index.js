@@ -33,13 +33,7 @@ const SPREADSHEET_ID_MIRANDA = "1AOjqabjFF4r2lIBtrfDCaYYYEqUcX9HGk8A4GpJKd7E"; /
 // Funzione per aggiungere spese ai fogli Google
 // Funzione per aggiungere spese ai fogli Google
 // Funzione per aggiungere spese ai fogli Google
-async function addExpenseToSheets(
-  description,
-  price,
-  category,
-  shared,
-  spreadsheetId
-) {
+async function addExpenseToSheets(description, price, category, shared, email) {
   try {
     let yourPrice = price;
     let mirandaPrice = 0;
@@ -49,11 +43,6 @@ async function addExpenseToSheets(
       yourPrice = price / 2;
       mirandaPrice = price / 2;
     }
-
-    // Log per la suddivisione della spesa
-    console.log(
-      `Prezzo da inserire: yourPrice=${yourPrice}, mirandaPrice=${mirandaPrice}`
-    );
 
     // Mappatura tra categorie e celle
     const categoryToCellMap = {
@@ -68,41 +57,88 @@ async function addExpenseToSheets(
       throw new Error(`Categoria non riconosciuta: ${category}`);
     }
 
-    // Log della cella e del foglio in cui stai scrivendo
-    console.log(
-      "Categoria:",
-      category,
-      "Cella:",
-      cell,
-      "Foglio:",
-      spreadsheetId
-    );
+    // Log per la cella e il foglio per l'utente corrente
+    const spreadsheetIdCurrentUser =
+      email === "miri@mail.com" ? SPREADSHEET_ID_MIRANDA : SPREADSHEET_ID_YOUR;
 
-    // Aggiungi la spesa al foglio giusto
-    await sheets.spreadsheets.values.append({
-      spreadsheetId: spreadsheetId, // Usa l'ID del foglio passato
-      range: `Sheet1!${cell}`, // Aggiungi il valore alla cella corretta
+    // Leggi il valore esistente nella cella
+    const getResponse = await sheets.spreadsheets.values.get({
+      spreadsheetId: spreadsheetIdCurrentUser,
+      range: `Sheet1!${cell}`,
+    });
+
+    // Ottieni il valore esistente, se presente
+    let existingValue = getResponse.data.values
+      ? getResponse.data.values[0][0]
+      : "0";
+
+    // Converti il valore esistente in numero, gestendo eventuali casi non numerici
+    existingValue = parseFloat(existingValue) || 0;
+
+    console.log(`Valore esistente nella cella ${cell}: ${existingValue}`); // Log per il valore esistente
+
+    // Somma il nuovo valore al valore esistente
+    const newValue = existingValue + yourPrice;
+
+    console.log(`Nuovo valore calcolato: ${newValue}`); // Log per il nuovo valore calcolato
+
+    // Aggiorna la cella con il nuovo valore
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: spreadsheetIdCurrentUser,
+      range: `Sheet1!${cell}`,
       valueInputOption: "USER_ENTERED",
       resource: {
-        values: [[yourPrice]], // Inserisci solo il prezzo
+        values: [[newValue]], // Aggiungi solo il prezzo per l'utente corrente
       },
     });
 
     console.log(
-      `Spesa di ${yourPrice} aggiunta a ${spreadsheetId} nella cella ${cell}`
+      `Spesa di ${yourPrice} aggiunta per ${email} nella cella ${cell}. Nuovo valore: ${newValue}`
     );
 
+    // Se la spesa è condivisa, aggiungila anche all'altro utente
     if (shared) {
-      await sheets.spreadsheets.values.append({
-        spreadsheetId: spreadsheetId, // Usa l'ID del foglio passato
-        range: `Sheet1!${cell}`, // Per Miranda
+      const spreadsheetIdOtherUser =
+        email === "miri@mail.com"
+          ? SPREADSHEET_ID_YOUR
+          : SPREADSHEET_ID_MIRANDA;
+
+      // Leggi il valore esistente nella cella per l'altro utente
+      const getResponseOther = await sheets.spreadsheets.values.get({
+        spreadsheetId: spreadsheetIdOtherUser,
+        range: `Sheet1!${cell}`,
+      });
+
+      let existingValueOther = getResponseOther.data.values
+        ? getResponseOther.data.values[0][0]
+        : "0";
+
+      // Converti il valore esistente in numero
+      existingValueOther = parseFloat(existingValueOther) || 0;
+
+      console.log(
+        `Valore esistente per l'altro utente nella cella ${cell}: ${existingValueOther}`
+      ); // Log per il valore esistente dell'altro utente
+
+      // Somma il nuovo valore al valore esistente per l'altro utente
+      const newValueOther = existingValueOther + mirandaPrice;
+
+      console.log(
+        `Nuovo valore calcolato per l'altro utente: ${newValueOther}`
+      ); // Log per il nuovo valore calcolato dell'altro utente
+
+      // Aggiorna la cella con il nuovo valore per l'altro utente
+      await sheets.spreadsheets.values.update({
+        spreadsheetId: spreadsheetIdOtherUser,
+        range: `Sheet1!${cell}`,
         valueInputOption: "USER_ENTERED",
         resource: {
-          values: [[mirandaPrice]], // Inserisci il prezzo condiviso
+          values: [[newValueOther]], // Aggiungi il prezzo per l'altro utente
         },
       });
+
       console.log(
-        `Prezzo condiviso di ${mirandaPrice} aggiunto nella cella ${cell}`
+        `Prezzo condiviso di ${mirandaPrice} aggiunto all'altro foglio nella cella ${cell}. Nuovo valore: ${newValueOther}`
       );
     }
   } catch (error) {
@@ -225,39 +261,28 @@ app.get("/api/expenses", async (req, res) => {
 
 // Route to add an expense
 // Route to add an expense
+// Modifica nel tuo endpoint /api/expenses/add
 app.post("/api/expenses/add", async (req, res) => {
-  const { token, category, price, type, description, shared } = req.body;
+  const { category, price, type, description } = req.body;
+
+  // Estrai il token dall'header
+  const token = req.body.token; // Questo è il token passato nel body
 
   if (!token) {
-    console.error("Token is missing");
-    return res.status(401).send("Unauthorized: No token provided");
+    return res.status(401).send("Unauthorized");
   }
 
   try {
-    // Verifica il token dell'utente
+    // Verifica il token e decodifica le informazioni
     const decodedToken = await admin.auth().verifyIdToken(token);
     const uid = decodedToken.uid;
-    const email = decodedToken.email; // Prendi l'email dell'utente
+    const email = decodedToken.email; // Assicurati di avere l'email qui
 
-    // Log per verificare il token e l'email
-    console.log("Token verificato:", decodedToken);
-    console.log("Email dell'utente autenticato:", email);
+    // Assumi che 'type' determini se è condivisa
+    const shared = type === "condivisa"; // Assicurati che il valore sia booleano
 
-    // Scegli il foglio corretto in base all'utente
-    let spreadsheetId;
-    const authorizedUsers = {
-      "miri@mail.com": SPREADSHEET_ID_MIRANDA,
-      "dani@mail.com": SPREADSHEET_ID_YOUR,
-    };
-    
-    // Verifica se l'email dell'utente è autorizzata
-    if (authorizedUsers[email]) {
-      spreadsheetId = authorizedUsers[email];
-      console.log(`Usando il foglio per ${email}:`, spreadsheetId);
-    } else {
-      console.log("Utente non autorizzato:", email);
-      return res.status(400).send("Utente non autorizzato");
-    }
+    // Log per vedere il valore di shared
+    console.log("Valore di shared:", shared);
 
     // Crea un nuovo documento nella collezione "expenses"
     const newExpense = {
@@ -281,8 +306,8 @@ app.post("/api/expenses/add", async (req, res) => {
       description,
       price,
       category,
-      shared,
-      spreadsheetId
+      shared, // Passa il valore booleano
+      email // Includi l'email
     );
 
     res.json({ message: "Spesa aggiunta con successo", expenseId: docRef.id });
