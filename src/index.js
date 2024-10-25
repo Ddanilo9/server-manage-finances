@@ -4,6 +4,7 @@ const admin = require("./firebase"); // Ensure Firebase is initialized correctly
 const { google } = require("googleapis"); // Libreria Google API
 const fs = require("fs");
 const path = require("path");
+const { log } = require("console");
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -30,9 +31,28 @@ const sheets = google.sheets({ version: "v4", auth });
 const SPREADSHEET_ID_YOUR = "1ub7knShEP9zqfnskxUGQIL3sqmPZ-cV_n6Z9VvKLG-0"; // ID del tuo foglio
 const SPREADSHEET_ID_MIRANDA = "1AOjqabjFF4r2lIBtrfDCaYYYEqUcX9HGk8A4GpJKd7E"; // ID del foglio di Miranda
 
-// Funzione per aggiungere spese ai fogli Google
-// Funzione per aggiungere spese ai fogli Google
-// Funzione per aggiungere spese ai fogli Google
+// Funzione per ottenere la colonna basata sul mese corrente
+function getColumnForCurrentMonth() {
+  const monthToColumnMap = {
+    0: "B", // Gennaio
+    1: "C", // Febbraio
+    2: "D", // Marzo
+    3: "E", // Aprile
+    4: "F", // Maggio
+    5: "G", // Giugno
+    6: "H", // Luglio
+    7: "I", // Agosto
+    8: "J", // Settembre
+    9: "K", // Ottobre
+    10: "L", // Novembre
+    11: "M", // Dicembre
+  };
+
+  const currentMonth = new Date().getMonth(); // Ottiene il mese corrente (0 per gennaio, 11 per dicembre)
+  return monthToColumnMap[currentMonth];
+}
+
+// Modifica alla funzione addExpenseToSheets per includere la colonna dinamica
 async function addExpenseToSheets(description, price, category, shared, email) {
   try {
     let yourPrice = price;
@@ -44,18 +64,34 @@ async function addExpenseToSheets(description, price, category, shared, email) {
       mirandaPrice = price / 2;
     }
 
-    // Mappatura tra categorie e celle
+    // Mappatura tra categorie e celle (solo righe, senza colonna)
     const categoryToCellMap = {
-      Trasporti: "D1",
-      Cibo: "D2",
-      // Aggiungi altre categorie e celle qui
+      Affitto: "26",
+      Casa: "27",
+      "Tel/Digi": "28",
+      "Metro/Bus": "31",
+      Cibo: "34",
+      "Cene/Uscite": "35",
+      Vario: "36",
+      Shopping: "37",
+      Entertainment: "40",
+      Palestra: "43",
+      Roadtrip: "46",
+      Vacanze: "74",
+      Commercial: "50",
+      "Tax/aut": "51",
+      "Tax/varie": "52",
     };
 
-    const cell = categoryToCellMap[category];
+    const cellRow = categoryToCellMap[category];
 
-    if (!cell) {
+    if (!cellRow) {
       throw new Error(`Categoria non riconosciuta: ${category}`);
     }
+
+    // Ottieni la colonna corretta in base al mese corrente
+    const currentColumn = getColumnForCurrentMonth();
+    const cell = `${currentColumn}${cellRow}`; // Combina la colonna dinamica con la riga fissa
 
     // Log per la cella e il foglio per l'utente corrente
     const spreadsheetIdCurrentUser =
@@ -316,6 +352,79 @@ app.post("/api/expenses/add", async (req, res) => {
     res.status(500).send("Errore del server");
   }
 });
+
+// Route to update an expense
+app.put("/api/expenses/edit/:id", async (req, res) => {
+  const { id } = req.params; // Ottieni l'ID della spesa dai parametri
+  console.log("Attempting to update expense with ID:", id); // Log ID della spesa
+
+  const { description, price, category, type } = req.body; // Estrai i campi aggiornati dal corpo della richiesta
+  console.log("Request body:", req.body); // Log per vedere il contenuto della richiesta
+
+  try {
+    // Estrai il token dall'header Authorization
+    const token = req.headers.authorization?.split(" ")[1];
+    console.log("Token received:", token); // Log del token ricevuto
+
+    if (!token) {
+      console.log('No token found'); // Log se il token non è stato inviato
+      return res.status(401).send("Unauthorized: No token provided");
+    }
+
+    // Verifica il token tramite Firebase Admin SDK
+    const decodedToken = await admin.auth().verifyIdToken(token);
+    console.log("Decoded token:", decodedToken); // Log del token decodificato
+
+    // Verifica se l'utente che effettua la richiesta è l'owner della spesa o ha i permessi necessari
+    const expenseRef = db.collection("expenses").doc(id);
+    const expenseSnapshot = await expenseRef.get();
+
+    const expensesSnapshot = await db.collection("expenses").get();
+    const expenses = [];
+    expensesSnapshot.forEach(doc => {
+      expenses.push({
+        id: doc.id,
+        ...doc.data(),
+      });
+    });
+    console.log("Current expenses in database:", expenses);
+    
+
+    const expenseData = expenseSnapshot.data();
+    console.log("Current expense data:", expenseData); // Log dei dati attuali della spesa
+
+    // Controlla se l'utente loggato è lo stesso che ha creato la spesa (se necessario)
+    if (expenseData.uid !== decodedToken.uid) {
+      console.log("Unauthorized: User does not own the expense"); // Log se l'utente non è autorizzato
+      return res.status(403).send("Unauthorized: You cannot edit this expense");
+    }
+
+    // Aggiorna i campi della spesa solo se vengono forniti nuovi valori
+    const updatedFields = {
+      description: description || expenseData.description,
+      price: price !== undefined ? price : expenseData.price, // Gestione esplicita per il campo price
+      category: category || expenseData.category,
+      type: type || expenseData.type,
+      date: new Date(), // Aggiorna la data all'attuale
+    };
+
+    console.log("Updating fields:", updatedFields); // Log per vedere i campi aggiornati
+
+    // Aggiorna il documento Firestore con i nuovi valori
+    await expenseRef.update(updatedFields);
+
+    console.log(`Expense with ID ${id} updated successfully`); // Log di successo
+
+    res.send({ message: "Spesa aggiornata con successo" });
+  } catch (error) {
+    console.error("Errore durante l'aggiornamento della spesa:", error); // Log in caso di errore
+    if (error.code === "auth/id-token-expired") {
+      return res.status(401).send("Token scaduto, aggiorna il token");
+    }
+    res.status(500).send("Errore del server");
+  }
+});
+
 
 // Start the server
 app.listen(PORT, () => {
