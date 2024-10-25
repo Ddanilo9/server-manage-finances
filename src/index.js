@@ -55,8 +55,8 @@ function getColumnForCurrentMonth() {
 // Modifica alla funzione addExpenseToSheets per includere la colonna dinamica
 async function addExpenseToSheets(description, price, category, shared, email) {
   try {
-    let yourPrice = price;
-    let mirandaPrice = shared ? price / 2 : 0; // Set mirandaPrice to half if shared
+    const yourPrice = shared ? price / 2 : price; // The user adding the expense gets either half or the full price
+    const otherPrice = shared ? price / 2 : 0; // The other user only gets half if it's shared
 
     // Map categories to specific rows
     const categoryToCellMap = {
@@ -78,7 +78,6 @@ async function addExpenseToSheets(description, price, category, shared, email) {
     };
 
     const cellRow = categoryToCellMap[category];
-
     if (!cellRow) {
       throw new Error(`Categoria non riconosciuta: ${category}`);
     }
@@ -86,25 +85,28 @@ async function addExpenseToSheets(description, price, category, shared, email) {
     const currentColumn = getColumnForCurrentMonth();
     const cell = `${currentColumn}${cellRow}`; // Combine column and row
 
-    // Identify the current user's spreadsheet ID
-    const spreadsheetIdCurrentUser =
+    // Set spreadsheetId and sheetId based on the email
+    const spreadsheetId =
       email === "miri@mail.com" ? SPREADSHEET_ID_MIRANDA : SPREADSHEET_ID_YOUR;
+    const sheetId = email === "miri@mail.com" ? 0 : 2125734459;
 
-    // Read the existing value in the cell for the current user
+    // Step 1: Read the existing value in the cell
     const getResponse = await sheets.spreadsheets.values.get({
-      spreadsheetId: spreadsheetIdCurrentUser,
+      spreadsheetId,
       range: `Sheet1!${cell}`,
     });
 
-    let existingValue = getResponse.data.values ? getResponse.data.values[0][0] : "0";
+    let existingValue = getResponse.data.values
+      ? getResponse.data.values[0][0]
+      : "0";
     existingValue = parseFloat(existingValue) || 0;
 
-    // Calculate the new total for the current user
+    // Calculate new total for the user adding the expense
     const newValue = existingValue + yourPrice;
 
-    // Update the cell with the new value for the current user
+    // Step 2: Update the cell with the new value for the user adding the expense
     await sheets.spreadsheets.values.update({
-      spreadsheetId: spreadsheetIdCurrentUser,
+      spreadsheetId,
       range: `Sheet1!${cell}`,
       valueInputOption: "USER_ENTERED",
       resource: {
@@ -112,28 +114,36 @@ async function addExpenseToSheets(description, price, category, shared, email) {
       },
     });
 
-    console.log(`Spesa di ${yourPrice} aggiunta per ${email} nella cella ${cell}. Nuovo valore: ${newValue}`);
+    console.log(
+      `Spesa di ${yourPrice} aggiunta per ${email} nella cella ${cell}. Nuovo valore: ${newValue}`
+    );
 
-    // If shared, update the other user's sheet
+
+    // Shared expense handling for the other user
     if (shared) {
-      const spreadsheetIdOtherUser =
-        email === "miri@mail.com" ? SPREADSHEET_ID_YOUR : SPREADSHEET_ID_MIRANDA;
+      const otherSpreadsheetId =
+        email === "miri@mail.com"
+          ? SPREADSHEET_ID_YOUR
+          : SPREADSHEET_ID_MIRANDA;
+      const otherSheetId = email === "miri@mail.com" ? 2125734459 : 0;
 
-      // Read the existing value in the cell for the other user
+      // Step 1: Read the existing value in the cell for the other user
       const getResponseOther = await sheets.spreadsheets.values.get({
-        spreadsheetId: spreadsheetIdOtherUser,
+        spreadsheetId: otherSpreadsheetId,
         range: `Sheet1!${cell}`,
       });
 
-      let existingValueOther = getResponseOther.data.values ? getResponseOther.data.values[0][0] : "0";
+      let existingValueOther = getResponseOther.data.values
+        ? getResponseOther.data.values[0][0]
+        : "0";
       existingValueOther = parseFloat(existingValueOther) || 0;
 
-      // Calculate the new total for the other user (miranda)
-      const newValueOther = existingValueOther + mirandaPrice; // Use mirandaPrice (half)
+      // Calculate new total for the other user
+      const newValueOther = existingValueOther + otherPrice;
 
-      // Update the cell with the new value for the other user
+      // Step 2: Update the cell with the new value for the other user
       await sheets.spreadsheets.values.update({
-        spreadsheetId: spreadsheetIdOtherUser,
+        spreadsheetId: otherSpreadsheetId,
         range: `Sheet1!${cell}`,
         valueInputOption: "USER_ENTERED",
         resource: {
@@ -141,14 +151,47 @@ async function addExpenseToSheets(description, price, category, shared, email) {
         },
       });
 
-      console.log(`Prezzo condiviso di ${mirandaPrice} aggiunto all'altro foglio nella cella ${cell}. Nuovo valore: ${newValueOther}`);
+      // Step 3: Add description as a cell note using batchUpdate for the other user
+      await sheets.spreadsheets.batchUpdate({
+        spreadsheetId: otherSpreadsheetId,
+        resource: {
+          requests: [
+            {
+              updateCells: {
+                range: {
+                  sheetId: otherSheetId,
+                  startRowIndex: cellRow - 1,
+                  endRowIndex: cellRow,
+                  startColumnIndex:
+                    currentColumn.charCodeAt(0) - "A".charCodeAt(0),
+                  endColumnIndex:
+                    currentColumn.charCodeAt(0) - "A".charCodeAt(0) + 1,
+                },
+                rows: [
+                  {
+                    values: [
+                      {
+                        userEnteredValue: { numberValue: newValueOther },
+                        note: description,
+                      },
+                    ],
+                  },
+                ],
+                fields: "note",
+              },
+            },
+          ],
+        },
+      });
+
+      console.log(
+        `Prezzo condiviso di ${otherPrice} aggiunto all'altro foglio nella cella ${cell}. Nuovo valore: ${newValueOther}`
+      );
     }
   } catch (error) {
     console.error("Errore durante l'aggiunta della spesa ai fogli:", error);
   }
 }
-
-
 
 // Route to get shared expenses
 app.get("/api/expenses/shared", async (req, res) => {
@@ -322,8 +365,13 @@ app.post("/api/expenses/add", async (req, res) => {
 });
 
 // Function to update an existing expense in Google Sheets
-// Function to update an existing expense in Google Sheets
-async function updateExpenseInSheets(description, price, category, shared, email) {
+async function updateExpenseInSheets(
+  description,
+  price,
+  category,
+  shared,
+  email
+) {
   try {
     const halfPrice = price / 2; // Set half price once for shared expenses
 
@@ -380,7 +428,9 @@ async function updateExpenseInSheets(description, price, category, shared, email
         },
       });
 
-      console.log(`Prezzo condiviso di ${halfPrice} aggiornato in entrambi i fogli nella cella ${cell}.`);
+      console.log(
+        `Prezzo condiviso di ${halfPrice} aggiornato in entrambi i fogli nella cella ${cell}.`
+      );
     } else {
       // Set the full price only for the current user if it's personal
       await sheets.spreadsheets.values.update({
@@ -402,21 +452,18 @@ async function updateExpenseInSheets(description, price, category, shared, email
         },
       });
 
-      console.log(`Spesa personale, impostato ${price} per ${email} e azzerato per l'altro utente nella cella ${cell}.`);
+      console.log(
+        `Spesa personale, impostato ${price} per ${email} e azzerato per l'altro utente nella cella ${cell}.`
+      );
     }
   } catch (error) {
-    console.error("Errore durante l'aggiornamento della spesa ai fogli:", error);
+    console.error(
+      "Errore durante l'aggiornamento della spesa ai fogli:",
+      error
+    );
   }
 }
 
-
-
-
-
-
-
-// Route to update an expense
-// Route to update an expense
 // Route to update an expense
 app.put("/api/expenses/edit/:id", async (req, res) => {
   const { id } = req.params;
@@ -458,12 +505,27 @@ app.put("/api/expenses/edit/:id", async (req, res) => {
     const userEmail = decodedToken.email;
 
     // Update the current user's sheet
-    await updateExpenseInSheets(description, updatedFields.price, updatedFields.category, isNowShared, userEmail);
+    await updateExpenseInSheets(
+      description,
+      updatedFields.price,
+      updatedFields.category,
+      isNowShared,
+      userEmail
+    );
 
     // If the expense is now shared, update the other user's sheet
     if (isNowShared) {
-      const otherUserEmail = userEmail === "miri@mail.com" ? SPREADSHEET_ID_YOUR : SPREADSHEET_ID_MIRANDA;
-      await updateExpenseInSheets(description, updatedFields.price, updatedFields.category, isNowShared, otherUserEmail);
+      const otherUserEmail =
+        userEmail === "miri@mail.com"
+          ? SPREADSHEET_ID_YOUR
+          : SPREADSHEET_ID_MIRANDA;
+      await updateExpenseInSheets(
+        description,
+        updatedFields.price,
+        updatedFields.category,
+        isNowShared,
+        otherUserEmail
+      );
     }
 
     res.send({ message: "Spesa aggiornata con successo" });
@@ -475,15 +537,6 @@ app.put("/api/expenses/edit/:id", async (req, res) => {
     res.status(500).send("Errore del server");
   }
 });
-
-
-
-
-
-
-
-
-
 
 // Start the server
 app.listen(PORT, () => {
