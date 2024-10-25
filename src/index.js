@@ -354,76 +354,56 @@ app.post("/api/expenses/add", async (req, res) => {
 });
 
 // Route to update an expense
+// Route to update an expense
 app.put("/api/expenses/edit/:id", async (req, res) => {
-  const { id } = req.params; // Ottieni l'ID della spesa dai parametri
-  console.log("Attempting to update expense with ID:", id); // Log ID della spesa
+  const { id } = req.params;
+  const { description, price, category, type } = req.body;
+  const token = req.headers.authorization?.split(" ")[1];
 
-  const { description, price, category, type } = req.body; // Estrai i campi aggiornati dal corpo della richiesta
-  console.log("Request body:", req.body); // Log per vedere il contenuto della richiesta
+  if (!token) {
+    return res.status(401).send("Unauthorized: No token provided");
+  }
 
   try {
-    // Estrai il token dall'header Authorization
-    const token = req.headers.authorization?.split(" ")[1];
-    console.log("Token received:", token); // Log del token ricevuto
-
-    if (!token) {
-      console.log('No token found'); // Log se il token non è stato inviato
-      return res.status(401).send("Unauthorized: No token provided");
-    }
-
-    // Verifica il token tramite Firebase Admin SDK
     const decodedToken = await admin.auth().verifyIdToken(token);
-    console.log("Decoded token:", decodedToken); // Log del token decodificato
-
-    // Verifica se l'utente che effettua la richiesta è l'owner della spesa o ha i permessi necessari
     const expenseRef = db.collection("expenses").doc(id);
     const expenseSnapshot = await expenseRef.get();
-
-    const expensesSnapshot = await db.collection("expenses").get();
-    const expenses = [];
-    expensesSnapshot.forEach(doc => {
-      expenses.push({
-        id: doc.id,
-        ...doc.data(),
-      });
-    });
-    console.log("Current expenses in database:", expenses);
-    
-
     const expenseData = expenseSnapshot.data();
-    console.log("Current expense data:", expenseData); // Log dei dati attuali della spesa
 
-    // Controlla se l'utente loggato è lo stesso che ha creato la spesa (se necessario)
+    // Verifica se l'utente è autorizzato
     if (expenseData.uid !== decodedToken.uid) {
-      console.log("Unauthorized: User does not own the expense"); // Log se l'utente non è autorizzato
       return res.status(403).send("Unauthorized: You cannot edit this expense");
     }
 
-    // Aggiorna i campi della spesa solo se vengono forniti nuovi valori
+    // Calcola la differenza di prezzo
+    const priceDifference = price - expenseData.price;
+
+    // Aggiorna i campi della spesa
     const updatedFields = {
       description: description || expenseData.description,
-      price: price !== undefined ? price : expenseData.price, // Gestione esplicita per il campo price
+      price: price !== undefined ? price : expenseData.price,
       category: category || expenseData.category,
       type: type || expenseData.type,
-      date: new Date(), // Aggiorna la data all'attuale
+      date: new Date(),
     };
 
-    console.log("Updating fields:", updatedFields); // Log per vedere i campi aggiornati
-
-    // Aggiorna il documento Firestore con i nuovi valori
+    // Aggiorna Firestore
     await expenseRef.update(updatedFields);
 
-    console.log(`Expense with ID ${id} updated successfully`); // Log di successo
+    // Aggiorna il foglio di Google Sheets con la differenza di prezzo
+    const shared = type === "condivisa";
+    await addExpenseToSheets(description, priceDifference, category, shared, decodedToken.email);
 
     res.send({ message: "Spesa aggiornata con successo" });
   } catch (error) {
-    console.error("Errore durante l'aggiornamento della spesa:", error); // Log in caso di errore
+    console.error("Errore durante l'aggiornamento della spesa:", error);
     if (error.code === "auth/id-token-expired") {
       return res.status(401).send("Token scaduto, aggiorna il token");
     }
     res.status(500).send("Errore del server");
   }
 });
+
 
 
 // Start the server
