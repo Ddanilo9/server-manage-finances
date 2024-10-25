@@ -56,15 +56,9 @@ function getColumnForCurrentMonth() {
 async function addExpenseToSheets(description, price, category, shared, email) {
   try {
     let yourPrice = price;
-    let mirandaPrice = 0;
+    let mirandaPrice = shared ? price / 2 : 0; // Set mirandaPrice to half if shared
 
-    // Se la spesa è condivisa, dividila a metà
-    if (shared) {
-      yourPrice = price / 2;
-      mirandaPrice = price / 2;
-    }
-
-    // Mappatura tra categorie e celle (solo righe, senza colonna)
+    // Map categories to specific rows
     const categoryToCellMap = {
       Affitto: "26",
       Casa: "27",
@@ -89,98 +83,72 @@ async function addExpenseToSheets(description, price, category, shared, email) {
       throw new Error(`Categoria non riconosciuta: ${category}`);
     }
 
-    // Ottieni la colonna corretta in base al mese corrente
     const currentColumn = getColumnForCurrentMonth();
-    const cell = `${currentColumn}${cellRow}`; // Combina la colonna dinamica con la riga fissa
+    const cell = `${currentColumn}${cellRow}`; // Combine column and row
 
-    // Log per la cella e il foglio per l'utente corrente
+    // Identify the current user's spreadsheet ID
     const spreadsheetIdCurrentUser =
       email === "miri@mail.com" ? SPREADSHEET_ID_MIRANDA : SPREADSHEET_ID_YOUR;
 
-    // Leggi il valore esistente nella cella
+    // Read the existing value in the cell for the current user
     const getResponse = await sheets.spreadsheets.values.get({
       spreadsheetId: spreadsheetIdCurrentUser,
       range: `Sheet1!${cell}`,
     });
 
-    // Ottieni il valore esistente, se presente
-    let existingValue = getResponse.data.values
-      ? getResponse.data.values[0][0]
-      : "0";
-
-    // Converti il valore esistente in numero, gestendo eventuali casi non numerici
+    let existingValue = getResponse.data.values ? getResponse.data.values[0][0] : "0";
     existingValue = parseFloat(existingValue) || 0;
 
-    console.log(`Valore esistente nella cella ${cell}: ${existingValue}`); // Log per il valore esistente
-
-    // Somma il nuovo valore al valore esistente
+    // Calculate the new total for the current user
     const newValue = existingValue + yourPrice;
 
-    console.log(`Nuovo valore calcolato: ${newValue}`); // Log per il nuovo valore calcolato
-
-    // Aggiorna la cella con il nuovo valore
+    // Update the cell with the new value for the current user
     await sheets.spreadsheets.values.update({
       spreadsheetId: spreadsheetIdCurrentUser,
       range: `Sheet1!${cell}`,
       valueInputOption: "USER_ENTERED",
       resource: {
-        values: [[newValue]], // Aggiungi solo il prezzo per l'utente corrente
+        values: [[newValue]],
       },
     });
 
-    console.log(
-      `Spesa di ${yourPrice} aggiunta per ${email} nella cella ${cell}. Nuovo valore: ${newValue}`
-    );
+    console.log(`Spesa di ${yourPrice} aggiunta per ${email} nella cella ${cell}. Nuovo valore: ${newValue}`);
 
-    // Se la spesa è condivisa, aggiungila anche all'altro utente
+    // If shared, update the other user's sheet
     if (shared) {
       const spreadsheetIdOtherUser =
-        email === "miri@mail.com"
-          ? SPREADSHEET_ID_YOUR
-          : SPREADSHEET_ID_MIRANDA;
+        email === "miri@mail.com" ? SPREADSHEET_ID_YOUR : SPREADSHEET_ID_MIRANDA;
 
-      // Leggi il valore esistente nella cella per l'altro utente
+      // Read the existing value in the cell for the other user
       const getResponseOther = await sheets.spreadsheets.values.get({
         spreadsheetId: spreadsheetIdOtherUser,
         range: `Sheet1!${cell}`,
       });
 
-      let existingValueOther = getResponseOther.data.values
-        ? getResponseOther.data.values[0][0]
-        : "0";
-
-      // Converti il valore esistente in numero
+      let existingValueOther = getResponseOther.data.values ? getResponseOther.data.values[0][0] : "0";
       existingValueOther = parseFloat(existingValueOther) || 0;
 
-      console.log(
-        `Valore esistente per l'altro utente nella cella ${cell}: ${existingValueOther}`
-      ); // Log per il valore esistente dell'altro utente
+      // Calculate the new total for the other user (miranda)
+      const newValueOther = existingValueOther + mirandaPrice; // Use mirandaPrice (half)
 
-      // Somma il nuovo valore al valore esistente per l'altro utente
-      const newValueOther = existingValueOther + mirandaPrice;
-
-      console.log(
-        `Nuovo valore calcolato per l'altro utente: ${newValueOther}`
-      ); // Log per il nuovo valore calcolato dell'altro utente
-
-      // Aggiorna la cella con il nuovo valore per l'altro utente
+      // Update the cell with the new value for the other user
       await sheets.spreadsheets.values.update({
         spreadsheetId: spreadsheetIdOtherUser,
         range: `Sheet1!${cell}`,
         valueInputOption: "USER_ENTERED",
         resource: {
-          values: [[newValueOther]], // Aggiungi il prezzo per l'altro utente
+          values: [[newValueOther]],
         },
       });
 
-      console.log(
-        `Prezzo condiviso di ${mirandaPrice} aggiunto all'altro foglio nella cella ${cell}. Nuovo valore: ${newValueOther}`
-      );
+      console.log(`Prezzo condiviso di ${mirandaPrice} aggiunto all'altro foglio nella cella ${cell}. Nuovo valore: ${newValueOther}`);
     }
   } catch (error) {
     console.error("Errore durante l'aggiunta della spesa ai fogli:", error);
   }
 }
+
+
 
 // Route to get shared expenses
 app.get("/api/expenses/shared", async (req, res) => {
@@ -370,15 +338,16 @@ app.put("/api/expenses/edit/:id", async (req, res) => {
     const expenseSnapshot = await expenseRef.get();
     const expenseData = expenseSnapshot.data();
 
-    // Verifica se l'utente è autorizzato
+    // Verify if the user is authorized to edit the expense
     if (expenseData.uid !== decodedToken.uid) {
       return res.status(403).send("Unauthorized: You cannot edit this expense");
     }
 
-    // Calcola la differenza di prezzo
-    const priceDifference = price - expenseData.price;
+    // Determine if the type has changed from personal to shared
+    const wasShared = expenseData.type === "condivisa";
+    const isNowShared = type === "condivisa";
 
-    // Aggiorna i campi della spesa
+    // Update fields based on the request
     const updatedFields = {
       description: description || expenseData.description,
       price: price !== undefined ? price : expenseData.price,
@@ -387,12 +356,33 @@ app.put("/api/expenses/edit/:id", async (req, res) => {
       date: new Date(),
     };
 
-    // Aggiorna Firestore
+    // Update Firestore
     await expenseRef.update(updatedFields);
 
-    // Aggiorna il foglio di Google Sheets con la differenza di prezzo
-    const shared = type === "condivisa";
-    await addExpenseToSheets(description, priceDifference, category, shared, decodedToken.email);
+    // Logic for updating Google Sheets
+    const userEmail = decodedToken.email;
+
+    // Calculate prices for both users
+    let currentUserPrice, otherUserPrice;
+
+    if (isNowShared) {
+      // If changing to shared, split the new price
+      currentUserPrice = price / 2;
+      otherUserPrice = price / 2;
+    } else {
+      // If changing back to personal, assign the full price to the current user
+      currentUserPrice = price;
+      otherUserPrice = 0; // Other user doesn't share this expense
+    }
+
+    // Update the current user's sheet
+    await addExpenseToSheets(description, currentUserPrice, category, isNowShared, userEmail);
+
+    // Update the other user's sheet if the expense is shared
+    if (isNowShared) {
+      const otherUserEmail = userEmail === "miri@mail.com" ? SPREADSHEET_ID_YOUR : SPREADSHEET_ID_MIRANDA;
+      await addExpenseToSheets(description, otherUserPrice, category, isNowShared, otherUserEmail);
+    }
 
     res.send({ message: "Spesa aggiornata con successo" });
   } catch (error) {
@@ -403,6 +393,9 @@ app.put("/api/expenses/edit/:id", async (req, res) => {
     res.status(500).send("Errore del server");
   }
 });
+
+
+
 
 
 
