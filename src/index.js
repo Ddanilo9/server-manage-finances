@@ -321,6 +321,101 @@ app.post("/api/expenses/add", async (req, res) => {
   }
 });
 
+// Function to update an existing expense in Google Sheets
+// Function to update an existing expense in Google Sheets
+async function updateExpenseInSheets(description, price, category, shared, email) {
+  try {
+    const halfPrice = price / 2; // Set half price once for shared expenses
+
+    // Map categories to specific rows
+    const categoryToCellMap = {
+      Affitto: "26",
+      Casa: "27",
+      "Tel/Digi": "28",
+      "Metro/Bus": "31",
+      Cibo: "34",
+      "Cene/Uscite": "35",
+      Vario: "36",
+      Shopping: "37",
+      Entertainment: "40",
+      Palestra: "43",
+      Roadtrip: "46",
+      Vacanze: "74",
+      Commercial: "50",
+      "Tax/aut": "51",
+      "Tax/varie": "52",
+    };
+
+    const cellRow = categoryToCellMap[category];
+    if (!cellRow) {
+      throw new Error(`Categoria non riconosciuta: ${category}`);
+    }
+
+    const currentColumn = getColumnForCurrentMonth();
+    const cell = `${currentColumn}${cellRow}`;
+
+    // Determine the spreadsheet IDs for both users
+    const spreadsheetIdCurrentUser =
+      email === "miri@mail.com" ? SPREADSHEET_ID_MIRANDA : SPREADSHEET_ID_YOUR;
+    const spreadsheetIdOtherUser =
+      email === "miri@mail.com" ? SPREADSHEET_ID_YOUR : SPREADSHEET_ID_MIRANDA;
+
+    // If shared, set both sheets to half price; if personal, set only current user's sheet
+    if (shared) {
+      await sheets.spreadsheets.values.update({
+        spreadsheetId: spreadsheetIdCurrentUser,
+        range: `Sheet1!${cell}`,
+        valueInputOption: "USER_ENTERED",
+        resource: {
+          values: [[halfPrice]], // Set to half price for current user
+        },
+      });
+
+      await sheets.spreadsheets.values.update({
+        spreadsheetId: spreadsheetIdOtherUser,
+        range: `Sheet1!${cell}`,
+        valueInputOption: "USER_ENTERED",
+        resource: {
+          values: [[halfPrice]], // Set to half price for other user
+        },
+      });
+
+      console.log(`Prezzo condiviso di ${halfPrice} aggiornato in entrambi i fogli nella cella ${cell}.`);
+    } else {
+      // Set the full price only for the current user if it's personal
+      await sheets.spreadsheets.values.update({
+        spreadsheetId: spreadsheetIdCurrentUser,
+        range: `Sheet1!${cell}`,
+        valueInputOption: "USER_ENTERED",
+        resource: {
+          values: [[price]], // Set to full price for personal expense
+        },
+      });
+
+      // Reset the other user's cell to 0
+      await sheets.spreadsheets.values.update({
+        spreadsheetId: spreadsheetIdOtherUser,
+        range: `Sheet1!${cell}`,
+        valueInputOption: "USER_ENTERED",
+        resource: {
+          values: [[0]], // Reset to zero for other user
+        },
+      });
+
+      console.log(`Spesa personale, impostato ${price} per ${email} e azzerato per l'altro utente nella cella ${cell}.`);
+    }
+  } catch (error) {
+    console.error("Errore durante l'aggiornamento della spesa ai fogli:", error);
+  }
+}
+
+
+
+
+
+
+
+// Route to update an expense
 // Route to update an expense
 // Route to update an expense
 app.put("/api/expenses/edit/:id", async (req, res) => {
@@ -362,26 +457,13 @@ app.put("/api/expenses/edit/:id", async (req, res) => {
     // Logic for updating Google Sheets
     const userEmail = decodedToken.email;
 
-    // Calculate prices for both users
-    let currentUserPrice, otherUserPrice;
-
-    if (isNowShared) {
-      // If changing to shared, split the new price
-      currentUserPrice = price / 2;
-      otherUserPrice = price / 2;
-    } else {
-      // If changing back to personal, assign the full price to the current user
-      currentUserPrice = price;
-      otherUserPrice = 0; // Other user doesn't share this expense
-    }
-
     // Update the current user's sheet
-    await addExpenseToSheets(description, currentUserPrice, category, isNowShared, userEmail);
+    await updateExpenseInSheets(description, updatedFields.price, updatedFields.category, isNowShared, userEmail);
 
-    // Update the other user's sheet if the expense is shared
+    // If the expense is now shared, update the other user's sheet
     if (isNowShared) {
       const otherUserEmail = userEmail === "miri@mail.com" ? SPREADSHEET_ID_YOUR : SPREADSHEET_ID_MIRANDA;
-      await addExpenseToSheets(description, otherUserPrice, category, isNowShared, otherUserEmail);
+      await updateExpenseInSheets(description, updatedFields.price, updatedFields.category, isNowShared, otherUserEmail);
     }
 
     res.send({ message: "Spesa aggiornata con successo" });
@@ -393,6 +475,10 @@ app.put("/api/expenses/edit/:id", async (req, res) => {
     res.status(500).send("Errore del server");
   }
 });
+
+
+
+
 
 
 
