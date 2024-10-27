@@ -146,6 +146,24 @@ async function updateSpreadsheet(uid) {
 }
 
 
+async function updatePersonalExpense(uid, newExpense) {
+  const spreadsheetId = '1ub7knShEP9zqfnskxUGQIL3sqmPZ-cV_n6Z9VvKLG-0'; // ID del foglio di calcolo
+  const cellRange = 'Sheet1!B2'; // La cella della spesa personale di Miranda (modifica se necessario)
+
+  try {
+      // Recupera il valore attuale della spesa personale
+      const currentExpenseValue = await getCellValue(spreadsheetId, cellRange);
+      
+      // Somma la nuova spesa personale
+      const updatedValue = (currentExpenseValue || 0) + newExpense; // Assicura che sia 0 se undefined
+
+      // Aggiorna il foglio di calcolo con il nuovo valore
+      await updateCellValue(spreadsheetId, cellRange, updatedValue);
+      console.log(`Valore aggiornato nella cella ${cellRange}: ${updatedValue}`);
+  } catch (error) {
+      console.error("Errore durante l'aggiornamento della spesa personale:", error);
+  }
+}
 
 
 async function updateSharedExpensesInSpreadsheet(sharedExpenses) {
@@ -187,14 +205,20 @@ async function clearSheets() {
 }
 
 // Function to get the value of a cell
-async function getCellValue(spreadsheetId, cell) {
-  const response = await sheets.spreadsheets.values.get({
-    spreadsheetId,
-    range: `Sheet1!${cell}`,
-  });
-  return response.data.values
-    ? parseFloat(response.data.values[0][0].replace(",", ".")) || 0
-    : 0;
+async function getCellValue(spreadsheetId, range) {
+  const request = {
+      spreadsheetId: spreadsheetId,
+      range: range,
+  };
+
+  try {
+      const response = await sheets.spreadsheets.values.get(request);
+      const values = response.data.values;
+      return values && values.length > 0 ? Number(values[0][0]) : 0; // Converte in numero
+  } catch (error) {
+      console.error("Errore durante il recupero del valore della cella:", error);
+      return 0; // Restituisce 0 in caso di errore
+  }
 }
 
 // Function to update the value of a cell
@@ -215,8 +239,6 @@ async function updateCellValue(spreadsheetId, range, value) {
       console.error("Errore durante l'aggiornamento della cella:", error);
   }
 }
-
-
 
 // Route to get all expenses
 // Route to get all expenses
@@ -346,12 +368,18 @@ app.post("/api/expenses/add", async (req, res) => {
     // Update the spreadsheet after adding the expense
     await updateSpreadsheet(uid);
 
+    // Aggiornare la spesa personale
+    if (type === "personale") {
+      await updatePersonalExpense(uid, price);
+    }
+
     res.json({ message: "Spesa aggiunta con successo", expenseId: docRef.id });
   } catch (error) {
     console.error("Errore durante l'aggiunta della spesa:", error);
     res.status(500).send("Errore del server");
   }
 });
+
 
 
 
