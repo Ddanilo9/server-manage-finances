@@ -187,6 +187,7 @@ async function updateCellValue(spreadsheetId, cell, newValue) {
 }
 
 // Route to get all expenses
+// Route to get all expenses
 app.get("/api/expenses", async (req, res) => {
   const token = req.headers.authorization?.split(" ")[1];
   if (!token) {
@@ -196,7 +197,7 @@ app.get("/api/expenses", async (req, res) => {
   try {
     const decodedToken = await admin.auth().verifyIdToken(token);
     const uid = decodedToken.uid;
-    const email = decodedToken.email; // Obtain the user's email
+    const email = decodedToken.email;
 
     // Retrieve expenses for the user
     const expensesSnapshot = await db
@@ -212,11 +213,8 @@ app.get("/api/expenses", async (req, res) => {
       });
     });
 
-    // If there are no expenses, reset the values in the sheets
-    if (expenses.length === 0) {
-      await clearSheets();
-    } else {
-      // Accumulate totals for each category and type (shared/personal)
+    // Se ci sono spese, accumula i totali
+    if (expenses.length > 0) {
       const categoryTotals = expenses.reduce((totals, expense) => {
         const { category, price, type } = expense;
         const isShared = type === "condivisa";
@@ -227,40 +225,44 @@ app.get("/api/expenses", async (req, res) => {
         return totals;
       }, {});
 
-      // Update the sheets with the new values
+      // Aggiorna i fogli con i nuovi valori
       for (const [category, totalTypes] of Object.entries(categoryTotals)) {
         const row = categoryToCellMap[category];
         const currentMonthColumn = getColumnForCurrentMonth();
         const cell = `${currentMonthColumn}${row}`;
 
-        // Determine which spreadsheet to update based on user
-        const spreadsheetId = email.includes("miranda") ? SPREADSHEET_ID_MIRANDA : SPREADSHEET_ID_YOUR;
+        // Determina quale spreadsheet aggiornare basato sull'UID
+        const spreadsheetId = uid === "jGHeOLzfldMd2Ro8UIU5zn1a2wp2" ? SPREADSHEET_ID_MIRANDA : SPREADSHEET_ID_YOUR;
 
-        // Sync only shared expenses in Miranda's sheet
+        // Aggiorna le spese condivise nel foglio di Miranda
         if (totalTypes.condivisa > 0) {
-          await updateCellValue(SPREADSHEET_ID_MIRANDA, cell, totalTypes.condivisa); // Update Miranda's sheet
+          await updateCellValue(SPREADSHEET_ID_MIRANDA, cell, totalTypes.condivisa); // Aggiorna il foglio di Miranda
 
-          // Update Danilo's sheet for shared expenses
-          await updateCellValue(SPREADSHEET_ID_YOUR, cell, totalTypes.condivisa); // Update Danilo's sheet
+          // Aggiorna il foglio di Danilo per le spese condivise
+          await updateCellValue(SPREADSHEET_ID_YOUR, cell, totalTypes.condivisa); // Aggiorna il foglio di Danilo
         }
 
-        // Sync Danilo's personal expenses
+        // Aggiorna le spese personali
         if (totalTypes.personale > 0) {
-          await updateCellValue(spreadsheetId, cell, totalTypes.personale); // Update the correct user's sheet
+          await updateCellValue(spreadsheetId, cell, totalTypes.personale); // Usa sempre spreadsheetId
         }
       }
+    } else {
+      await clearSheets();
     }
 
     res.json(expenses);
   } catch (error) {
     if (error.code === "auth/id-token-expired") {
-      return res.status(401).send("Token expired, refresh the token");
+      return res.status(401).send("Token scaduto, aggiorna il token");
     }
     console.error("Error retrieving and syncing expenses:", error);
     res.status(500).send("Server error");
   }
 });
 
+
+// Route to add an expense
 // Route to add an expense
 app.post("/api/expenses/add", async (req, res) => {
   const { category, price, type, description } = req.body;
@@ -273,12 +275,10 @@ app.post("/api/expenses/add", async (req, res) => {
   try {
     const decodedToken = await admin.auth().verifyIdToken(token);
     const uid = decodedToken.uid;
-    const email = decodedToken.email; // Assicurati di avere l'email qui
+    const email = decodedToken.email;
 
     const shared = type === "condivisa"; // Assicurati che il valore sia booleano
-    console.log("Valore di shared:", shared);
 
-    // Create a new expense document in Firestore
     const newExpense = {
       uid: uid,
       description: description,
@@ -289,17 +289,12 @@ app.post("/api/expenses/add", async (req, res) => {
     };
     
     const docRef = await db.collection("expenses").add(newExpense);
-    console.log("Spesa salvata nel database con ID:", docRef.id);
 
-    // Determine which spreadsheet to update based on user
     const spreadsheetId = email.includes("miranda") ? SPREADSHEET_ID_MIRANDA : SPREADSHEET_ID_YOUR;
-
-    // Update the Google Sheets with the new expense
-    const row = categoryToCellMap[category]; // Get the row for the category
+    const row = categoryToCellMap[category];
     const cell = `${getColumnForCurrentMonth()}${row}`;
-    
-    // Only update the sheet for the user
-    await updateCellValue(spreadsheetId, cell, price);
+
+    await updateCellValue(spreadsheetId, cell, price); // Usa il giusto spreadsheetId
 
     res.json({ message: "Spesa aggiunta con successo", expenseId: docRef.id });
   } catch (error) {
@@ -307,6 +302,7 @@ app.post("/api/expenses/add", async (req, res) => {
     res.status(500).send("Errore del server");
   }
 });
+
 
 // Route to update an expense
 app.put("/api/expenses/edit/:id", async (req, res) => {
@@ -361,28 +357,23 @@ app.put("/api/expenses/edit/:id", async (req, res) => {
     const newCategoryRow = categoryToCellMap[category];
     const oldCategoryRow = categoryToCellMap[oldCategory];
 
-    // Array of spreadsheet IDs
-    const spreadsheetIds = [
-      SPREADSHEET_ID_MIRANDA,
-      SPREADSHEET_ID_YOUR, // Make sure to define this ID in your environment
-    ];
+    // Determine the correct spreadsheet ID based on the UID
+    const spreadsheetId = decodedToken.uid === "jGHeOLzfldMd2Ro8UIU5zn1a2wp2" // UID for Miranda
+      ? SPREADSHEET_ID_MIRANDA 
+      : SPREADSHEET_ID_YOUR; // UID for Danilo
 
     // If the category has changed, reset the old category value in the sheets
     if (oldCategory !== category) {
       const oldCell = `${currentMonthColumn}${oldCategoryRow}`;
-      for (const spreadsheetId of spreadsheetIds) {
-        await updateCellValue(spreadsheetId, oldCell, 0); // Reset old category value to 0
-        console.log(`Updating value in cell ${oldCell} for spreadsheet ID ${spreadsheetId} with value: 0`);
-      }
+      await updateCellValue(spreadsheetId, oldCell, 0); // Reset old category value to 0 in the correct spreadsheet
+      console.log(`Updating value in cell ${oldCell} for spreadsheet ID ${spreadsheetId} with value: 0`);
     }
 
     // Update the new category value in the sheets
     const newCell = `${currentMonthColumn}${newCategoryRow}`;
     const newValue = price; // Assuming you want to set the new value to the price
-    for (const spreadsheetId of spreadsheetIds) {
-      await updateCellValue(spreadsheetId, newCell, newValue);
-      console.log(`Updating value in cell ${newCell} for spreadsheet ID ${spreadsheetId} with value: ${newValue}`);
-    }
+    await updateCellValue(spreadsheetId, newCell, newValue); // Use the determined spreadsheetId
+    console.log(`Updating value in cell ${newCell} for spreadsheet ID ${spreadsheetId} with value: ${newValue}`);
 
     res.send({ message: "Spesa aggiornata con successo" });
   } catch (error) {
@@ -393,7 +384,6 @@ app.put("/api/expenses/edit/:id", async (req, res) => {
     res.status(500).send("Errore del server");
   }
 });
-
 
 // Route to delete an expense
 app.delete("/api/expenses/delete", async (req, res) => {
