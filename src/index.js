@@ -118,32 +118,58 @@ const categoryToCellMap = {
   "Tax/varie": "52",
 };
 async function updateSpreadsheet(uid) {
-  // Get shared expenses
-  const sharedExpenses = await db.collection("expenses")
-    .where("type", "==", "condivisa")
-    .get();
+  try {
+      const expenses = await getPersonalExpenses(uid);
+      console.log("Spese recuperate:", expenses); // Log delle spese
 
-  const sharedValues = sharedExpenses.docs.map(doc => doc.data().price);
+      if (expenses.length === 0) {
+          console.log("Nessuna spesa condivisa da aggiornare.");
+          return; 
+      }
 
-  // Only update if shared values exist
-  if (sharedValues.length > 0) {
-    // Update spreadsheet with shared expenses values
-    await updateSharedExpensesInSpreadsheet(sharedValues);
-  } else {
-    console.log("No shared expenses to update.");
+      for (let i = 0; i < expenses.length; i++) {
+          const expense = expenses[i];
+          const row = i + 2; // Assumendo che la prima riga sia per le intestazioni
+          const range = `Sheet1!A${row}`; // Modifica in base al tuo range
+          const value = expense.value;
+
+          if (value !== undefined) {
+              await updateCellValue(spreadsheetId, range, value);
+          } else {
+              console.error(`Valore undefined per la spesa: ${JSON.stringify(expense)}`);
+          }
+      }
+
+  } catch (error) {
+      console.error("Errore durante l'aggiornamento del foglio:", error);
   }
+}
 
-  // Handle personal expenses if any exist
-  const personalExpenses = await db.collection("expenses")
-    .where("uid", "==", uid)
-    .get();
 
-  if (personalExpenses.docs.length === 0) {
-    console.log("No personal expenses to update.");
-    // Optionally clear or reset personal expense cells in the spreadsheet here
-  } else {
-    // Update spreadsheet with personal expenses values
-    await updatePersonalExpensesInSpreadsheet(personalExpenses);
+
+
+async function updateSharedExpensesInSpreadsheet(sharedExpenses) {
+  const currentMonthColumn = getColumnForCurrentMonth();
+  for (const expense of sharedExpenses) {
+    const row = categoryToCellMap[expense.category];
+    const cell = `${currentMonthColumn}${row}`;
+    
+    // Update the shared expense in both sheets (for example, you could aggregate)
+    await updateCellValue(SPREADSHEET_ID_YOUR, cell, expense.price); 
+    await updateCellValue(SPREADSHEET_ID_MIRANDA, cell, expense.price);
+  }
+}
+async function updatePersonalExpensesInSpreadsheet(personalExpenses, uid) {
+  const currentMonthColumn = getColumnForCurrentMonth();
+  for (const expense of personalExpenses) {
+    const row = categoryToCellMap[expense.category];
+    const cell = `${currentMonthColumn}${row}`;
+    
+    // Determine which spreadsheet to update based on the user's UID
+    const spreadsheetId = uid === "jGHeOLzfldMd2Ro8UIU5zn1a2wp2" ? SPREADSHEET_ID_MIRANDA : SPREADSHEET_ID_YOUR;
+    
+    // Update personal expense in the respective user's sheet
+    await updateCellValue(spreadsheetId, cell, expense.price);
   }
 }
 
@@ -172,19 +198,25 @@ async function getCellValue(spreadsheetId, cell) {
 }
 
 // Function to update the value of a cell
-async function updateCellValue(spreadsheetId, cell, newValue) {
-  console.log(
-    `Updating value in cell ${cell} for spreadsheet ID ${spreadsheetId} with value: ${newValue}`
-  );
-  await sheets.spreadsheets.values.update({
-    spreadsheetId,
-    range: `Sheet1!${cell}`,
-    valueInputOption: "USER_ENTERED",
-    requestBody: {
-      values: [[newValue]],
-    },
-  });
+async function updateCellValue(spreadsheetId, range, value) {
+  const request = {
+      spreadsheetId: spreadsheetId,
+      range: range,
+      valueInputOption: "USER_ENTERED",
+      resource: {
+          values: [[value]], // Assicurati che value non sia undefined
+      },
+  };
+
+  try {
+      await sheets.spreadsheets.values.update(request);
+      console.log(`Aggiornato ${range} con valore: ${value}`);
+  } catch (error) {
+      console.error("Errore durante l'aggiornamento della cella:", error);
+  }
 }
+
+
 
 // Route to get all expenses
 // Route to get all expenses
@@ -197,61 +229,71 @@ app.get("/api/expenses", async (req, res) => {
   try {
     const decodedToken = await admin.auth().verifyIdToken(token);
     const uid = decodedToken.uid;
-    const email = decodedToken.email;
 
-    // Retrieve expenses for the user
-    const expensesSnapshot = await db
+    // Retrieve personal expenses for the user
+    const personalExpensesSnapshot = await db
       .collection("expenses")
       .where("uid", "==", uid)
       .get();
 
-    const expenses = [];
-    expensesSnapshot.forEach((doc) => {
-      expenses.push({
+    const personalExpenses = [];
+    personalExpensesSnapshot.forEach((doc) => {
+      personalExpenses.push({
         id: doc.id,
         ...doc.data(),
       });
     });
 
-    // Se ci sono spese, accumula i totali
-    if (expenses.length > 0) {
-      const categoryTotals = expenses.reduce((totals, expense) => {
-        const { category, price, type } = expense;
-        const isShared = type === "condivisa";
+    // Retrieve shared expenses
+    const sharedExpensesSnapshot = await db
+      .collection("expenses")
+      .where("type", "==", "condivisa")
+      .get();
 
-        if (!totals[category]) totals[category] = { personale: 0, condivisa: 0 };
-        totals[category][isShared ? "condivisa" : "personale"] += isShared ? price / 2 : price;
+    const sharedExpenses = [];
+    sharedExpensesSnapshot.forEach((doc) => {
+      sharedExpenses.push({
+        id: doc.id,
+        ...doc.data(),
+      });
+    });
 
-        return totals;
-      }, {});
+    // Accumulate totals for personal expenses
+    const categoryTotals = personalExpenses.reduce((totals, expense) => {
+      const { category, price, type } = expense;
+      const isShared = type === "condivisa";
 
-      // Aggiorna i fogli con i nuovi valori
+      if (!totals[category]) totals[category] = { personale: 0, condivisa: 0 };
+      totals[category][isShared ? "condivisa" : "personale"] += isShared ? price / 2 : price;
+
+      return totals;
+    }, {});
+
+    // If there are personal expenses, update the sheets accordingly
+    if (personalExpenses.length > 0) {
       for (const [category, totalTypes] of Object.entries(categoryTotals)) {
         const row = categoryToCellMap[category];
         const currentMonthColumn = getColumnForCurrentMonth();
         const cell = `${currentMonthColumn}${row}`;
 
-        // Determina quale spreadsheet aggiornare basato sull'UID
         const spreadsheetId = uid === "jGHeOLzfldMd2Ro8UIU5zn1a2wp2" ? SPREADSHEET_ID_MIRANDA : SPREADSHEET_ID_YOUR;
 
-        // Aggiorna le spese condivise nel foglio di Miranda
+        // Update the sheets
         if (totalTypes.condivisa > 0) {
-          await updateCellValue(SPREADSHEET_ID_MIRANDA, cell, totalTypes.condivisa); // Aggiorna il foglio di Miranda
-
-          // Aggiorna il foglio di Danilo per le spese condivise
-          await updateCellValue(SPREADSHEET_ID_YOUR, cell, totalTypes.condivisa); // Aggiorna il foglio di Danilo
+          await updateCellValue(SPREADSHEET_ID_MIRANDA, cell, totalTypes.condivisa);
+          await updateCellValue(SPREADSHEET_ID_YOUR, cell, totalTypes.condivisa);
         }
-
-        // Aggiorna le spese personali
         if (totalTypes.personale > 0) {
-          await updateCellValue(spreadsheetId, cell, totalTypes.personale); // Usa sempre spreadsheetId
+          await updateCellValue(spreadsheetId, cell, totalTypes.personale);
         }
       }
     } else {
-      await clearSheets();
+      // Only clear personal expense cells if there are no personal expenses
+      await clearPersonalExpenseCells(uid);
     }
 
-    res.json(expenses);
+    // Send back the expenses, including shared expenses
+    res.json({ personalExpenses, sharedExpenses });
   } catch (error) {
     if (error.code === "auth/id-token-expired") {
       return res.status(401).send("Token scaduto, aggiorna il token");
@@ -261,7 +303,21 @@ app.get("/api/expenses", async (req, res) => {
   }
 });
 
+// Helper function to clear personal expense cells in the sheets
+async function clearPersonalExpenseCells(uid) {
+  const currentMonthColumn = getColumnForCurrentMonth();
+  for (const category of Object.keys(categoryToCellMap)) {
+    const row = categoryToCellMap[category];
+    const cell = `${currentMonthColumn}${row}`;
+    
+    // Reset the value in the user's sheet to 0, but retain shared expenses
+    const spreadsheetId = uid === "jGHeOLzfldMd2Ro8UIU5zn1a2wp2" ? SPREADSHEET_ID_MIRANDA : SPREADSHEET_ID_YOUR;
+    await updateCellValue(spreadsheetId, cell, 0);
+  }
+}
 
+
+// Route to add an expense
 // Route to add an expense
 // Route to add an expense
 app.post("/api/expenses/add", async (req, res) => {
@@ -275,9 +331,6 @@ app.post("/api/expenses/add", async (req, res) => {
   try {
     const decodedToken = await admin.auth().verifyIdToken(token);
     const uid = decodedToken.uid;
-    const email = decodedToken.email;
-
-    const shared = type === "condivisa"; // Assicurati che il valore sia booleano
 
     const newExpense = {
       uid: uid,
@@ -290,11 +343,8 @@ app.post("/api/expenses/add", async (req, res) => {
     
     const docRef = await db.collection("expenses").add(newExpense);
 
-    const spreadsheetId = email.includes("miranda") ? SPREADSHEET_ID_MIRANDA : SPREADSHEET_ID_YOUR;
-    const row = categoryToCellMap[category];
-    const cell = `${getColumnForCurrentMonth()}${row}`;
-
-    await updateCellValue(spreadsheetId, cell, price); // Usa il giusto spreadsheetId
+    // Update the spreadsheet after adding the expense
+    await updateSpreadsheet(uid);
 
     res.json({ message: "Spesa aggiunta con successo", expenseId: docRef.id });
   } catch (error) {
@@ -304,83 +354,39 @@ app.post("/api/expenses/add", async (req, res) => {
 });
 
 
+
+
+
 // Route to update an expense
 app.put("/api/expenses/edit/:id", async (req, res) => {
   const { id } = req.params;
-  const { description, price, category, type } = req.body;
-  const token = req.headers.authorization?.split(" ")[1];
+  const { category, price, type, description } = req.body;
+  const token = req.body.token;
 
   if (!token) {
-    console.error("Unauthorized: No token provided");
-    return res.status(401).send("Unauthorized: No token provided");
+    return res.status(401).send("Unauthorized");
   }
 
   try {
-    console.log(`Verifying token...`);
     const decodedToken = await admin.auth().verifyIdToken(token);
-    const expenseRef = db.collection("expenses").doc(id);
-    const expenseSnapshot = await expenseRef.get();
-    const expenseData = expenseSnapshot.data();
-    console.log(`Expense data retrieved:`, expenseData);
+    const uid = decodedToken.uid;
 
-    // Verify if the user is authorized to edit the expense
-    if (expenseData.uid !== decodedToken.uid) {
-      console.error("Unauthorized: User cannot edit this expense");
-      return res.status(403).send("Unauthorized: You cannot edit this expense");
-    }
-
-    // Store the old category
-    const oldCategory = expenseData.category;
-    console.log(`Old category: ${oldCategory}`);
-
-    // Determine if the type has changed
-    const wasShared = expenseData.type === "condivisa";
-    const isNowShared = type === "condivisa";
-    console.log(`Expense type changed: wasShared = ${wasShared}, isNowShared = ${isNowShared}`);
-
-    // Update fields based on the request
-    const updatedFields = {
-      description: description || expenseData.description,
-      price: price !== undefined ? price : expenseData.price,
-      category: category || expenseData.category,
-      type: type || expenseData.type,
-      date: new Date(),
+    const updatedExpense = {
+      category: category,
+      price: price,
+      description: description,
+      type: type,
     };
-    console.log(`Updated fields:`, updatedFields);
 
-    // Update Firestore
-    await expenseRef.update(updatedFields);
-    console.log(`Expense updated in Firestore.`);
+    // Update the expense in Firestore
+    await db.collection("expenses").doc(id).update(updatedExpense);
 
-    // Get the current month column
-    const currentMonthColumn = getColumnForCurrentMonth();
-    const newCategoryRow = categoryToCellMap[category];
-    const oldCategoryRow = categoryToCellMap[oldCategory];
+    // Update the spreadsheet after editing the expense
+    await updateSpreadsheet(uid);
 
-    // Determine the correct spreadsheet ID based on the UID
-    const spreadsheetId = decodedToken.uid === "jGHeOLzfldMd2Ro8UIU5zn1a2wp2" // UID for Miranda
-      ? SPREADSHEET_ID_MIRANDA 
-      : SPREADSHEET_ID_YOUR; // UID for Danilo
-
-    // If the category has changed, reset the old category value in the sheets
-    if (oldCategory !== category) {
-      const oldCell = `${currentMonthColumn}${oldCategoryRow}`;
-      await updateCellValue(spreadsheetId, oldCell, 0); // Reset old category value to 0 in the correct spreadsheet
-      console.log(`Updating value in cell ${oldCell} for spreadsheet ID ${spreadsheetId} with value: 0`);
-    }
-
-    // Update the new category value in the sheets
-    const newCell = `${currentMonthColumn}${newCategoryRow}`;
-    const newValue = price; // Assuming you want to set the new value to the price
-    await updateCellValue(spreadsheetId, newCell, newValue); // Use the determined spreadsheetId
-    console.log(`Updating value in cell ${newCell} for spreadsheet ID ${spreadsheetId} with value: ${newValue}`);
-
-    res.send({ message: "Spesa aggiornata con successo" });
+    res.json({ message: "Spesa aggiornata con successo" });
   } catch (error) {
     console.error("Errore durante l'aggiornamento della spesa:", error);
-    if (error.code === "auth/id-token-expired") {
-      return res.status(401).send("Token scaduto, aggiorna il token");
-    }
     res.status(500).send("Errore del server");
   }
 });
