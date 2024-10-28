@@ -118,74 +118,98 @@ app.post("/api/auth/verify", async (req, res) => {
 // Funzione per sincronizzare le spese nei fogli di Danilo e Miranda
 async function syncExpensesToSheets(personalExpenses, sharedExpenses, sheetId) {
   try {
-    const monthColumn = getColumnForCurrentMonth();
-    
-    // Cancella i dati esistenti nel foglio per le righe specifiche
-    const clearRequests = Object.values(categoryToCellMap).map((row) => ({
-      range: `${monthColumn}${row}`,
-      values: [[]], // Svuota la cella
-    }));
-    
-    await sheets.spreadsheets.values.batchUpdate({
-      spreadsheetId: sheetId,
-      resource: {
-        data: clearRequests,
-        valueInputOption: "USER_ENTERED",
-      },
-    });
+      const monthColumn = getColumnForCurrentMonth();
 
-    const personalTotals = {}; // Mappa per memorizzare i totali delle spese personali
-    const sharedTotals = {}; // Mappa per memorizzare i totali delle spese condivise
+      // Step 1: Clear existing data in the specified rows
+      const clearRequests = Object.values(categoryToCellMap).map((row) => ({
+          range: `${monthColumn}${row}`,
+          values: [[]], // Clear the cell
+      }));
 
-    // Aggiungi le spese personali (ignora le spese condivise)
-    for (const expense of personalExpenses) {
-      if (expense.type === "condivisa") {
-        continue; // Ignora le spese condivise in personalExpenses
-      }
-      const row = categoryToCellMap[expense.category];
-      if (row) {
-        personalTotals[row] = (personalTotals[row] || 0) + expense.price;
-      }
-    }
-
-    // Aggiungi le spese condivise (prezzo diviso a metà)
-    for (const expense of sharedExpenses) {
-      const row = categoryToCellMap[expense.category];
-      if (row) {
-        const dividedPrice = expense.price / 2; // Dividi il prezzo delle spese condivise
-        sharedTotals[row] = (sharedTotals[row] || 0) + dividedPrice;
-      }
-    }
-
-    // Combina i totali delle spese personali e condivise
-    const combinedTotals = {};
-    for (const [row, total] of Object.entries(personalTotals)) {
-      combinedTotals[row] = (combinedTotals[row] || 0) + total; // Aggiungi le spese personali
-    }
-    for (const [row, total] of Object.entries(sharedTotals)) {
-      combinedTotals[row] = (combinedTotals[row] || 0) + total; // Aggiungi le spese condivise
-    }
-
-    // Aggiungi i totali calcolati come richieste per il foglio
-    const requests = [];
-    for (const [row, total] of Object.entries(combinedTotals)) {
-      requests.push({
-        range: `${monthColumn}${row}`,
-        values: [[total]],
+      await sheets.spreadsheets.values.batchUpdate({
+          spreadsheetId: sheetId,
+          resource: {
+              data: clearRequests,
+              valueInputOption: "USER_ENTERED",
+          },
       });
-    }
 
-    await sheets.spreadsheets.values.batchUpdate({
-      spreadsheetId: sheetId,
-      resource: {
-        data: requests,
-        valueInputOption: "USER_ENTERED",
-      },
-    });
+      // Step 2: Retrieve existing totals from the sheet
+      const existingTotalsResponse = await sheets.spreadsheets.values.batchGet({
+          spreadsheetId: sheetId,
+          ranges: Object.keys(categoryToCellMap).map((category) => `${monthColumn}${categoryToCellMap[category]}`),
+      });
 
-    console.log(`Dati sincronizzati sul foglio ${sheetId}`);
+      const existingTotals = {};
+      existingTotalsResponse.data.valueRanges.forEach((range) => {
+          const category = Object.keys(categoryToCellMap).find(
+              (key) => `${monthColumn}${categoryToCellMap[key]}` === range.range
+          );
+          existingTotals[category] = range.values ? parseFloat(range.values[0][0]) : 0;
+      });
+
+      const personalTotals = {};
+      const sharedTotals = {};
+
+      // Step 3: Calculate personal totals, ignoring shared expenses
+      for (const expense of personalExpenses) {
+          if (expense.type === "condivisa") continue; // Ignore shared expenses
+          const row = categoryToCellMap[expense.category];
+          if (row) {
+              personalTotals[row] = (personalTotals[row] || 0) + expense.price;
+          }
+      }
+
+      // Step 4: Calculate shared totals
+      for (const expense of sharedExpenses) {
+          const row = categoryToCellMap[expense.category];
+          if (row) {
+              const dividedPrice = expense.price / 2; // Divide shared price
+              sharedTotals[row] = (sharedTotals[row] || 0) + dividedPrice;
+          }
+      }
+
+      // Step 5: Combine totals with existing values
+      const combinedTotals = {};
+      for (const [row, total] of Object.entries(personalTotals)) {
+          combinedTotals[row] = (combinedTotals[row] || 0) + total; // Add personal expenses
+      }
+      for (const [row, total] of Object.entries(sharedTotals)) {
+          combinedTotals[row] = (combinedTotals[row] || 0) + total; // Add shared expenses
+      }
+
+      // Step 6: Adjust totals based on transitions from shared to personal
+      for (const expense of personalExpenses) {
+          if (expense.type === "personale" && sharedExpenses.some(shared => shared.id === expense.id)) {
+              // If this expense was shared and is now personal
+              const row = categoryToCellMap[expense.category];
+              if (row && existingTotals[expense.category] !== undefined) {
+                  // Subtract from the total of the other user
+                  combinedTotals[row] = (combinedTotals[row] || 0) - (expense.price / 2); // Adjust for shared amount
+              }
+          }
+      }
+
+      // Step 7: Update the sheet with new totals
+      const requests = [];
+      for (const [row, total] of Object.entries(combinedTotals)) {
+          requests.push({
+              range: `${monthColumn}${row}`,
+              values: [[total]],
+          });
+      }
+
+      await sheets.spreadsheets.values.batchUpdate({
+          spreadsheetId: sheetId,
+          resource: {
+              data: requests,
+              valueInputOption: "USER_ENTERED",
+          },
+      });
+
+      console.log(`Dati sincronizzati sul foglio ${sheetId}`);
   } catch (error) {
-    console.error("Errore durante la sincronizzazione dei fogli:", error);
+      console.error("Errore durante la sincronizzazione dei fogli:", error);
   }
 }
 
@@ -282,7 +306,7 @@ app.post("/api/expenses/add", async (req, res) => {
 app.put("/api/expenses/edit/:id", async (req, res) => {
   const { id } = req.params;
   const { category, price, type, description } = req.body;
-  const token = req.body.token;
+  const token = req.headers.authorization?.split(" ")[1]; // Retrieve token from headers
 
   if (!token) {
     return res.status(401).send("Unauthorized");
@@ -292,11 +316,14 @@ app.put("/api/expenses/edit/:id", async (req, res) => {
     const decodedToken = await admin.auth().verifyIdToken(token);
     const uid = decodedToken.uid;
 
+    // Log the expense details for debugging
+    console.log("Updating expense:", { id, category, price, type, description });
+
     const updatedExpense = {
-      category: category,
-      price: price,
-      description: description,
-      type: type,
+      category,
+      price,
+      description,
+      type,
     };
 
     // Update the expense in Firestore
@@ -305,9 +332,15 @@ app.put("/api/expenses/edit/:id", async (req, res) => {
     res.json({ message: "Spesa aggiornata con successo" });
   } catch (error) {
     console.error("Errore durante l'aggiornamento della spesa:", error);
+    
+    if (error.code === "auth/id-token-expired") {
+      return res.status(401).send("Token scaduto, aggiorna il token");
+    }
+
     res.status(500).send("Errore del server");
   }
 });
+
 
 // Route to delete all expenses
 app.delete("/api/expenses/delete", async (req, res) => {
