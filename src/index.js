@@ -59,13 +59,16 @@ const categoryToCellMap = {
   "Cene/Uscite": "35",
   Vario: "36",
   Shopping: "37",
-  Entertainment: "40",
-  Palestra: "43",
-  Roadtrip: "46",
-  Vacanze: "74",
-  Commercial: "50",
-  "Tax/aut": "51",
-  "Tax/varie": "52",
+  Cosmetica: "38",
+  Educazione: "39",
+  Entertainment: "42",
+  Palestra: "45",
+  Salute: "46",
+  Roadtrip: "49",
+  Vacanze: "50",
+  Commercial: "53",
+  "Tax/aut": "54",
+  "Tax/varie": "55",
 };
 
 // Route to get shared expenses
@@ -123,7 +126,7 @@ async function syncExpensesToSheets(personalExpenses, sharedExpenses, sheetId) {
       // Step 1: Clear existing data in the specified rows
       const clearRequests = Object.values(categoryToCellMap).map((row) => ({
           range: `${monthColumn}${row}`,
-          values: [[]], // Clear the cell
+          values: [[0]], // Set the cell to zero
       }));
 
       await sheets.spreadsheets.values.batchUpdate({
@@ -195,7 +198,7 @@ async function syncExpensesToSheets(personalExpenses, sharedExpenses, sheetId) {
       for (const [row, total] of Object.entries(combinedTotals)) {
           requests.push({
               range: `${monthColumn}${row}`,
-              values: [[total]],
+              values: [[total]], // Update with the new total
           });
       }
 
@@ -212,7 +215,6 @@ async function syncExpensesToSheets(personalExpenses, sharedExpenses, sheetId) {
       console.error("Errore durante la sincronizzazione dei fogli:", error);
   }
 }
-
 
 // Route per recuperare e sincronizzare le spese
 app.get("/api/expenses", async (req, res) => {
