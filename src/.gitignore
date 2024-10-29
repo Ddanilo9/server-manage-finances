@@ -1,0 +1,12 @@
+# Ignora le credenziali e la cartella dei segreti
+src/secrets/
+
+# Ignora le dipendenze del progetto
+node_modules/
+
+# Ignora il file delle variabili d'ambiente, se usato
+.env
+
+# Ignora file generati durante la build o altri file temporanei
+dist/
+.DS_Store
